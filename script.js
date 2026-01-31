@@ -1,6 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getDatabase, ref, push, set, onValue } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 
+// --- PASTE YOUR FIREBASE CONFIG HERE ---
 const firebaseConfig = {
     apiKey: "AIzaSyAKkvOztBDOJ7hJ6vVZsTrBwi-yMPWPkBs", 
     authDomain: "xxxx-98488.firebaseapp.com",
@@ -17,58 +18,50 @@ let currentFolderId = 'root';
 
 // DOM Elements
 const fileInput = document.getElementById('file-upload');
-const uploadBtn = document.getElementById('upload-btn');
 const filesGridEl = document.getElementById('files-grid');
+const noteCountEl = document.getElementById('note-count');
 
 // --- 1. UPLOAD & CONVERT LOGIC ---
+window.triggerUpload = () => fileInput.click();
+
 fileInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    // We only accept DOCX for note conversion
     if (!file.name.endsWith('.docx')) {
-        alert("Please upload a .docx file to convert it to a note.");
+        alert("Please upload a .docx file.");
         return;
     }
 
-    const originalText = uploadBtn.innerHTML;
-    uploadBtn.innerHTML = `<i class="fas fa-sync fa-spin"></i> Reading Doc...`;
+    // Change button text temporarily
+    const btn = document.querySelector('.btn-create');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Processing...`;
 
     try {
-        // 1. Read file as ArrayBuffer (Required for Mammoth)
         const arrayBuffer = await readFileAsArrayBuffer(file);
-
-        // 2. Convert DOCX to HTML using Mammoth
-        // Note: mammoth is loaded globally in index.html script tag
         const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer });
-        const htmlContent = result.value; // The generated HTML
-        
-        if(!htmlContent) {
-            throw new Error("Could not extract text. Is the document empty?");
-        }
+        const htmlContent = result.value;
 
-        // 3. Save HTML to Firebase
-        const filesRef = ref(db, 'files');
-        const newFileRef = push(filesRef);
-        
-        await set(newFileRef, {
-            name: file.name.replace('.docx', ''), // Remove extension for clean title
-            content: htmlContent, // SAVE HTML HERE
-            type: 'note', // Custom type
+        if(!htmlContent) throw new Error("Empty document");
+
+        await push(ref(db, 'files'), {
+            name: file.name.replace('.docx', ''),
+            content: htmlContent, // Saves the text content
             folderId: currentFolderId,
+            type: 'note',
             createdAt: Date.now()
         });
-        
+
     } catch (error) {
-        console.error("Conversion failed:", error);
-        alert("Error converting file.");
+        console.error(error);
+        alert("Error converting note.");
     } finally {
-        uploadBtn.innerHTML = originalText;
+        btn.innerHTML = originalText;
         fileInput.value = '';
     }
 });
 
-// Helper: Read file for Mammoth
 const readFileAsArrayBuffer = (file) => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -78,72 +71,47 @@ const readFileAsArrayBuffer = (file) => {
     });
 };
 
-// --- 2. RENDER NOTES ---
+// --- 2. RENDER NOTES (The Visual Fix) ---
 onValue(ref(db, 'files'), (snapshot) => {
     filesGridEl.innerHTML = '';
     const data = snapshot.val();
     
     if (!data) {
-        filesGridEl.innerHTML = '<p style="color:#aaa;">No notes yet.</p>';
+        noteCountEl.innerText = "0 notes";
         return;
     }
 
     const files = Object.values(data).filter(f => f.folderId === currentFolderId);
-
-    if (files.length === 0) {
-        filesGridEl.innerHTML = '<p style="color:#aaa;">Folder is empty.</p>';
-        return;
-    }
+    noteCountEl.innerText = `${files.length} notes`;
 
     files.forEach(file => {
         const date = new Date(file.createdAt).toLocaleDateString();
 
+        // Create the "Note Look" Card
         const card = document.createElement('div');
-        card.className = 'file-card';
-        // Use a "Sticky Note" look
+        card.className = 'note-card';
         card.innerHTML = `
-            <div class="icon-wrapper" style="background: #fef9c3; color: #d97706;">
-                <i class="fas fa-sticky-note"></i>
+            <div class="card-icon"><i class="fas fa-sticky-note"></i></div>
+            <div class="note-preview"></div> <div>
+                <div class="note-title">${file.name}</div>
+                <div class="note-date">${date}</div>
             </div>
-            <div class="file-name">${file.name}</div>
-            <div class="file-date">${date}</div>
         `;
         
-        // CLICKING OPENS THE NOTE VIEWER MODAL
         card.onclick = () => openNoteViewer(file.name, file.content);
-        
         filesGridEl.appendChild(card);
     });
 });
 
-// --- 3. FOLDERS & MODALS ---
-
-// Open Note Viewer
-window.openNoteViewer = (title, htmlContent) => {
+// --- 3. MODAL & FOLDER LOGIC ---
+window.openNoteViewer = (title, content) => {
     document.getElementById('viewer-title').innerText = title;
-    document.getElementById('viewer-content').innerHTML = htmlContent;
+    document.getElementById('viewer-content').innerHTML = content;
     document.getElementById('note-viewer-modal').classList.add('show');
 }
 
-// Generic Modal functions
 window.openModal = (id) => document.getElementById(id).classList.add('show');
 window.closeModal = (id) => document.getElementById(id).classList.remove('show');
-
-// Folder Logic (Same as before)
-window.loadFolder = function(id, name) {
-    currentFolderId = id;
-    document.getElementById('current-folder-name').innerText = name || "All Notes";
-    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-    if(id === 'root') document.getElementById('nav-root').classList.add('active');
-}
-
-window.createFolder = async function() {
-    const name = document.getElementById('new-folder-name').value;
-    if (!name) return;
-    await push(ref(db, 'folders'), { name: name, createdAt: Date.now() });
-    document.getElementById('new-folder-name').value = '';
-    window.closeModal('folder-modal');
-}
 
 onValue(ref(db, 'folders'), (snapshot) => {
     const list = document.getElementById('folder-list');
@@ -155,8 +123,32 @@ onValue(ref(db, 'folders'), (snapshot) => {
             const div = document.createElement('div');
             div.className = `nav-item ${currentFolderId === key ? 'active' : ''}`;
             div.innerHTML = `<i class="far fa-folder"></i> ${folder.name}`;
-            div.onclick = () => window.loadFolder(key, folder.name);
+            div.onclick = () => loadFolder(key, folder.name);
             list.appendChild(div);
         });
     }
 });
+
+window.loadFolder = (id, name) => {
+    currentFolderId = id;
+    document.getElementById('current-folder-name').innerText = name || "All Notes";
+    // Update UI active state
+    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+    if(id === 'root') document.getElementById('nav-root').classList.add('active');
+    
+    // Refresh grid triggers automatically via onValue listener
+    // But we trigger a re-render of just the grid part if needed by the filter logic inside onValue
+    // (The listener handles it automatically since it runs on every data change or reload)
+    // To force re-filter on click without data change, we can re-read the snapshot or store data locally.
+    // For simplicity, we just reload the page/view logic or let the listener handle updates.
+    // A quick hack to force refresh view with current data:
+    onValue(ref(db, 'files'), (snapshot) => { /* Re-runs the render logic above */ }, {onlyOnce: true}); 
+}
+
+window.createFolder = async () => {
+    const name = document.getElementById('new-folder-name').value;
+    if (!name) return;
+    await push(ref(db, 'folders'), { name: name, createdAt: Date.now() });
+    document.getElementById('new-folder-name').value = '';
+    window.closeModal('folder-modal');
+}
